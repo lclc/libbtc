@@ -306,20 +306,27 @@ btc_bool btc_net_spv_request_headers(btc_spv_client *client)
     /* try to request headers from a peer where the version handshake has been done */
     btc_bool new_headers_available = false;
     unsigned int nodes_at_same_height = 0;
-    for(size_t i =0;i< client->nodegroup->nodes->len; i++)
+    if (client->headers_db->getchaintip(client->headers_db_ctx)->header.timestamp > client->oldest_item_of_interest - (BLOCK_GAP_TO_DEDUCT_TO_START_SCAN_FROM * BLOCKS_DELTA_IN_S) )
     {
-        btc_node *check_node = vector_idx(client->nodegroup->nodes, i);
-        if ( ((check_node->state & NODE_CONNECTED) == NODE_CONNECTED) && check_node->version_handshake)
+        // no need to fetch headers;
+    }
+    else {
+        for(size_t i =0;i< client->nodegroup->nodes->len; i++)
         {
-            if (check_node->bestknownheight > client->headers_db->getchaintip(client->headers_db_ctx)->height) {
-                btc_net_spv_node_request_headers_or_blocks(check_node, false);
-                new_headers_available = true;
-                return true;
-            } else if (check_node->bestknownheight == client->headers_db->getchaintip(client->headers_db_ctx)->height) {
-                nodes_at_same_height++;
+            btc_node *check_node = vector_idx(client->nodegroup->nodes, i);
+            if ( ((check_node->state & NODE_CONNECTED) == NODE_CONNECTED) && check_node->version_handshake)
+            {
+                if (check_node->bestknownheight > client->headers_db->getchaintip(client->headers_db_ctx)->height) {
+                    btc_net_spv_node_request_headers_or_blocks(check_node, false);
+                    new_headers_available = true;
+                    return true;
+                } else if (check_node->bestknownheight == client->headers_db->getchaintip(client->headers_db_ctx)->height) {
+                    nodes_at_same_height++;
+                }
             }
         }
     }
+
     if (!new_headers_available && btc_node_group_amount_of_connected_nodes(client->nodegroup, NODE_CONNECTED) > 0) {
         // try to fetch blocks if no new headers are available but connected nodes are reachable
         for(size_t i =0;i< client->nodegroup->nodes->len; i++)
@@ -362,7 +369,7 @@ void btc_net_spv_post_cmd(btc_node *node, btc_p2p_msg_hdr *hdr, struct const_buf
         struct const_buffer original_inv = { buf->p, buf->len };
         uint32_t varlen;
         deser_varlen(&varlen, buf);
-        btc_bool onlyblocks = true;
+        btc_bool contains_block = false;
 
         client->nodegroup->log_write_cb("Get inv request with %d items\n", varlen);
 
@@ -370,12 +377,12 @@ void btc_net_spv_post_cmd(btc_node *node, btc_p2p_msg_hdr *hdr, struct const_buf
         {
             uint32_t type;
             deser_u32(&type, buf);
-            if (type != BTC_INV_TYPE_BLOCK)
-                onlyblocks = false;
+            if (type == BTC_INV_TYPE_BLOCK)
+                contains_block = true;
 
             /* skip the hash, we are going to directly use the inv-buffer for the getdata */
             /* this means we don't support invs contanining blocks and txns as a getblock answer */
-            if (i == varlen -1 && onlyblocks == true) {
+            if (type == BTC_INV_TYPE_BLOCK) {
                 deser_u256(node->last_requested_inv, buf);
             }
             else {
@@ -383,7 +390,7 @@ void btc_net_spv_post_cmd(btc_node *node, btc_p2p_msg_hdr *hdr, struct const_buf
             }
         }
 
-        if (onlyblocks)
+        if (contains_block)
         {
             node->time_last_request = time(NULL);
 
@@ -398,9 +405,6 @@ void btc_net_spv_post_cmd(btc_node *node, btc_p2p_msg_hdr *hdr, struct const_buf
                 /* not sure if this is clever if we want to download, as example, the complete chain */
                 btc_net_spv_node_request_headers_or_blocks(node, true);
             }
-        }
-        else if (varlen > 1) {
-            client->nodegroup->log_write_cb("Error inv mixed type\n");
         }
     }
     if (strcmp(hdr->command, BTC_MSG_BLOCK) == 0)
